@@ -16,8 +16,9 @@
  *                  Upload Mode:"UART0/Hardware CDC"
  *                  USB Mode:"Hardware CDC and JTAG"
  */
-#define ENABLE_PLAYER
-#define ENABLE_IR_SENDER
+// disable these for now
+//#define ENABLE_PLAYER
+//#define ENABLE_IR_SENDER
 
 #include <LilyGoLib.h>
 #include <LV_Helper.h>
@@ -30,32 +31,11 @@ IRsend irsend(BOARD_IR_PIN);
 #include <driver/gpio.h>
 #include <esp_vad.h>
 
-#ifdef ENABLE_PLAYER
-#include <AudioFileSourcePROGMEM.h>
-#include <AudioFileSourceID3.h>
-#include <AudioGeneratorMP3.h>
-#include <AudioGeneratorWAV.h>
-#include <AudioOutputI2S.h>
-#include <AudioFileSourceSPIFFS.h>
-
-AudioGeneratorMP3       *mp3;
-AudioFileSourcePROGMEM  *file;
-AudioOutputI2S          *out;
-AudioFileSourceID3      *id3;
-AudioGeneratorWAV       *wav;
-AudioFileSourceSPIFFS   *file_fs;
-
-extern const uint8_t boot_music[4365];
-#endif
-
 #define LVGL_MESSAGE_PROGRESS_CHANGED_ID        (88)
-#define DEFAULT_RECORD_FILENAME                 "/rec.wav"
-#define AUDIO_DATA                              boot_music
-#define RADIO_TRANSMIT_PAGE_ID                  9
-#define WIFI_SCAN_PAGE_ID                       8
-#define MIC_IR_PAGE_ID                          11
+#define RADIO_TRANSMIT_PAGE_ID                  2
+#define WIFI_SCAN_PAGE_ID                       1
 
-#define DEFAULT_SCREEN_TIMEOUT                  15*1000
+#define DEFAULT_SCREEN_TIMEOUT                  20*1000
 #define DEFAULT_COLOR                           (lv_color_make(252, 218, 72))
 #define VAD_FRAME_LENGTH_MS                     30
 #define VAD_BUFFER_LENGTH                       (VAD_FRAME_LENGTH_MS * MIC_I2S_SAMPLE_RATE / 1000)
@@ -67,18 +47,6 @@ LV_IMG_DECLARE(clock_minute_hand);
 LV_IMG_DECLARE(clock_second_hand);
 
 
-
-LV_IMG_DECLARE(watch_if);
-LV_IMG_DECLARE(watch_bg);
-LV_IMG_DECLARE(watch_if_hour);
-LV_IMG_DECLARE(watch_if_min);
-LV_IMG_DECLARE(watch_if_sec);
-
-LV_IMG_DECLARE(watch_if_bg2);
-LV_IMG_DECLARE(watch_if_hour2);
-LV_IMG_DECLARE(watch_if_min2);
-LV_IMG_DECLARE(watch_if_sec2);
-
 LV_FONT_DECLARE(font_siegra);
 LV_FONT_DECLARE(font_sandbox);
 LV_FONT_DECLARE(font_jetBrainsMono);
@@ -89,10 +57,6 @@ LV_FONT_DECLARE(font_ununtu_18);
 LV_IMG_DECLARE(img_usb_plug);
 
 LV_IMG_DECLARE(charge_done_battery);
-
-LV_IMG_DECLARE(watch_if_5);
-LV_IMG_DECLARE(watch_if_6);
-LV_IMG_DECLARE(watch_if_8);
 
 
 static lv_obj_t *battery_percent;
@@ -121,8 +85,6 @@ static uint8_t pageId = 0;
 static bool lightSleep = false;
 // Flag used for acceleration interrupt status
 static bool sportsIrq = false;
-// Flag used to indicate whether recording is enabled
-static bool recordFlag = false;
 // Flag used for PMU interrupt trigger status
 static bool pmuIrq = false;
 // Flag used to select whether to turn off the screen
@@ -168,51 +130,41 @@ static lv_datetime_t lv_datetime [] = {
     {NULL, "Sec", 0, 59, 0, 2}
 };
 
-typedef bool (*player_cb_t)(void);
-static player_cb_t player_task_cb = NULL;
-static bool playWAV();
-static bool playMP3();
 
 void factory_ui();
 
-void productPinmap(lv_obj_t *parent);
 void analogclock(lv_obj_t *parent);
-void analogclock2(lv_obj_t *parent);
-void analogclock3(lv_obj_t *parent);
 
 
-void digitalClock(lv_obj_t *parent);
-void digitalClock2(lv_obj_t *parent);
-
-void devicesInformation(lv_obj_t *parent);
 void wifiscan(lv_obj_t *parent);
-void musicPlay(lv_obj_t *parent);
+
 void radioPingPong(lv_obj_t *parent);
 void irRemoteVeiw(lv_obj_t *parent);
 void datetimeVeiw(lv_obj_t *parent);
-void lilygo_qrcode(lv_obj_t *parent);
+
 
 void settingPMU();
 void settingSensor();
 void settingRadio();
-void settingPlayer();
 void settingIRRemote();
 void settingButtonStyle();
 void PMUHandler();
-void lowPowerEnergyHandler();
+void lowPowerEnergyHandler(bool canDeepSleep);
 void destoryChargeUI();
 
 void radioTask(lv_timer_t *parent);
-static void PDM_Record(const char *song_name, uint32_t duration);
-static bool CreateWAV(const char *song_name, uint32_t duration, uint16_t num_channels, const uint32_t sampling_rate, uint16_t bits_per_sample);
+
+
 
 void WiFiScanDone(WiFiEvent_t event, WiFiEventInfo_t info)
 {
     Serial.println("WiFiScanDone");
     if (pageId != WIFI_SCAN_PAGE_ID) {
         canScreenOff = true;
-        WiFi.removeEvent(WiFiEvent_t::ARDUINO_EVENT_WIFI_SCAN_DONE);
-        WiFi.mode(WIFI_OFF);
+        // Varx: turning WIFI off here causes a soft UI crash? hmmmm
+        // WiFi.removeEvent(WiFiEvent_t::ARDUINO_EVENT_WIFI_SCAN_DONE);
+        // WiFi.mode(WIFI_OFF);
+        // Serial.println("Offpage turned wifi off");
         return;
     }
 
@@ -279,6 +231,8 @@ void setup()
 {
     // Stop wifi
     WiFi.mode(WIFI_MODE_NULL);
+    // setup wifi callback
+    WiFi.onEvent(WiFiScanDone, WiFiEvent_t::ARDUINO_EVENT_WIFI_SCAN_DONE);
 
     btStop();
 
@@ -286,17 +240,13 @@ void setup()
 
     Serial.begin(115200);
 
-    watch.begin();
-
-    watch.initMicrophone();
+    watch.begin(&Serial);
 
     settingPMU();
 
     settingSensor();
 
     settingRadio();
-
-    settingPlayer();
 
     settingIRRemote();
 
@@ -477,9 +427,10 @@ void SensorHandler()
 }
 
 
-void lowPowerEnergyHandler()
+void lowPowerEnergyHandler(bool canDeepSleep)
 {
-    Serial.println("Enter light sleep mode!");
+    Serial.print("Enter sleep mode! lightSleep=");
+    Serial.println(lightSleep);
     brightnessLevel = watch.getBrightness();
     watch.decrementBrightness(0);
 
@@ -506,15 +457,20 @@ void lowPowerEnergyHandler()
         gpio_wakeup_enable ((gpio_num_t)BOARD_BMA423_INT1, GPIO_INTR_HIGH_LEVEL);
         esp_sleep_enable_gpio_wakeup ();
         esp_light_sleep_start();
+    } else if(canDeepSleep) {
+        //WiFi.mode(WIFI_OFF);
+        //delay(100);
+        watch.setSleepMode(TOUCH_WAKEUP);
+        watch.sleep(1000*1000);
+        // will never get here. we're deeep asleep and will retstart above
     } else {
 
         setCpuFrequencyMhz(10);
         // setCpuFrequencyMhz(80);
+        int cnt = 0;
         while (!pmuIrq && !sportsIrq && !watch.getTouched()) {
             delay(300);
             // gpio_wakeup_enable ((gpio_num_t)BOARD_TOUCH_INT, GPIO_INTR_LOW_LEVEL);
-            // esp_sleep_enable_timer_wakeup(3 * 1000);
-            // esp_light_sleep_start();
         }
 
         setCpuFrequencyMhz(240);
@@ -548,17 +504,12 @@ void loop()
 
     PMUHandler();
 
-    if (recordFlag) {
-        recordFlag = false;
-        PDM_Record(DEFAULT_RECORD_FILENAME, 8);
-        canScreenOff = true;
-        lv_disp_trig_activity(NULL);
-    }
-
     bool screenTimeout = lv_disp_get_inactive_time(NULL) < DEFAULT_SCREEN_TIMEOUT;
+
     if (screenTimeout ||
             !canScreenOff ||
-            usbPlugIn) {
+            (usbPlugIn && false) // force sleep for debug
+            ) {
         if (!screenTimeout) {
             if (usbPlugIn &&
                     (pageId != WIFI_SCAN_PAGE_ID &&
@@ -570,9 +521,11 @@ void loop()
         }
         lv_task_handler();
         delay(2);
-    } else {
-        lowPowerEnergyHandler();
-    }
+        } else {
+                // If true, we'll do a deep sleep to SUPER save battery power
+            bool canDeepSleep = !usbPlugIn && pageId != WIFI_SCAN_PAGE_ID && pageId != RADIO_TRANSMIT_PAGE_ID;
+            lowPowerEnergyHandler(canDeepSleep);
+        }
 
 }
 
@@ -590,11 +543,17 @@ void tileview_change_cb(lv_event_t *e)
     Serial.print(" pageId:");
     Serial.println(pageId);
 
+
+    if(pageId == lastPageID) {
+        Serial.println("duplicate page val. Ignoring in cb");
+        return;
+    }
+
     switch (pageId) {
     case WIFI_SCAN_PAGE_ID:
         if ((WiFi.getStatusBits() & WIFI_SCANNING_BIT) != WIFI_SCANNING_BIT ) {
             Serial.println("scanNetworks");
-            WiFi.onEvent(WiFiScanDone, WiFiEvent_t::ARDUINO_EVENT_WIFI_SCAN_DONE);
+            
             WiFi.mode(WIFI_STA);
             WiFi.scanNetworks(true);
             canScreenOff = false;
@@ -605,20 +564,16 @@ void tileview_change_cb(lv_event_t *e)
         canScreenOff = false;
         break;
     default:
-        if (lastPageID == MIC_IR_PAGE_ID) {
-            lv_label_set_text(vad_btn_label, "VAD detect");
-            lv_obj_clear_state(vad_btn, 3);
-            vTaskSuspend(vadTaskHandler);
-        }
-        if (WiFi.getMode() != WIFI_OFF ) {
-            WiFi.removeEvent(WiFiEvent_t::ARDUINO_EVENT_WIFI_SCAN_DONE);
-            WiFi.mode(WIFI_OFF);
-            Serial.println("WiFi.mode(WIFI_OFF);");
-        }
-        if (!transmitTask->paused) {
-            lv_timer_pause(transmitTask);
-            Serial.println("lv_timer_pause transmitTask");
-        }
+    // Varx: This is handled in the wifi scan callback. We're double handling it here. Causes crash if switch in middlfe of
+        // if (WiFi.getMode() != WIFI_OFF ) {
+        //     WiFi.removeEvent(WiFiEvent_t::ARDUINO_EVENT_WIFI_SCAN_DONE);
+        //     WiFi.mode(WIFI_OFF);
+        //     Serial.println("WiFi.mode(WIFI_OFF);");
+        // }
+        // if (!transmitTask->paused) {
+        //     lv_timer_pause(transmitTask);
+        //     Serial.println("lv_timer_pause transmitTask");
+        // }
         canScreenOff = true;
         break;
     }
@@ -638,48 +593,36 @@ void factory_ui()
     lv_obj_add_event_cb(tileview, tileview_change_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     lv_obj_t *t1 = lv_tileview_add_tile(tileview, 0, 0, LV_DIR_HOR | LV_DIR_BOTTOM);
-    lv_obj_t *t1_0 = lv_tileview_add_tile(tileview, 0, 1, LV_DIR_TOP | LV_DIR_BOTTOM);
-    lv_obj_t *t1_1 = lv_tileview_add_tile(tileview, 0, 2, LV_DIR_TOP | LV_DIR_BOTTOM);
+    // lv_obj_t *t1_0 = lv_tileview_add_tile(tileview, 0, 1, LV_DIR_TOP | LV_DIR_BOTTOM);
+    // lv_obj_t *t1_1 = lv_tileview_add_tile(tileview, 0, 2, LV_DIR_TOP | LV_DIR_BOTTOM);
 
     lv_obj_t *t2 = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_HOR | LV_DIR_BOTTOM);
-    lv_obj_t *t2_1 = lv_tileview_add_tile(tileview, 1, 1, LV_DIR_TOP | LV_DIR_BOTTOM);
-    lv_obj_t *t2_2 = lv_tileview_add_tile(tileview, 1, 2, LV_DIR_TOP | LV_DIR_BOTTOM);
-    lv_obj_t *t2_3 = lv_tileview_add_tile(tileview, 1, 3, LV_DIR_TOP | LV_DIR_BOTTOM);
 
     lv_obj_t *t3 = lv_tileview_add_tile(tileview, 2, 0, LV_DIR_HOR | LV_DIR_BOTTOM);
-    lv_obj_t *t3_1 = lv_tileview_add_tile(tileview, 2, 1, LV_DIR_TOP | LV_DIR_BOTTOM);
+    // lv_obj_t *t3_1 = lv_tileview_add_tile(tileview, 2, 1, LV_DIR_TOP | LV_DIR_BOTTOM);
 
 
-    lv_obj_t *t4 = lv_tileview_add_tile(tileview, 3, 0, LV_DIR_HOR);
-    lv_obj_t *t5 = lv_tileview_add_tile(tileview, 4, 0, LV_DIR_HOR);
-    lv_obj_t *t6 = lv_tileview_add_tile(tileview, 5, 0, LV_DIR_HOR);
-    lv_obj_t *t7 = lv_tileview_add_tile(tileview, 6, 0, LV_DIR_HOR);
+    // lv_obj_t *t4 = lv_tileview_add_tile(tileview, 3, 0, LV_DIR_HOR);
+    // lv_obj_t *t5 = lv_tileview_add_tile(tileview, 4, 0, LV_DIR_HOR);
+    // lv_obj_t *t6 = lv_tileview_add_tile(tileview, 5, 0, LV_DIR_HOR);
+    // lv_obj_t *t7 = lv_tileview_add_tile(tileview, 6, 0, LV_DIR_HOR);
 
 
-    productPinmap(t1);
-    lilygo_qrcode(t1_0, "https://www.lilygo.cc/", "Official website");
-    lilygo_qrcode(t1_1, "https://github.com/Xinyuan-LilyGO/TTGO_TWatch_Library", "Github website");
+    analogclock(t1);
 
+    wifiscan(t2);
 
-    analogclock(t2);
-    analogclock2(t2_1);
-    analogclock3(t2_2);
+    radioPingPong(t3);
 
-    digitalClock(t2_3);
+    //irRemoteVeiw(t6);
+    //datetimeVeiw(t5);
 
-    devicesInformation(t3);
-    wifiscan(t3_1);
-
-    radioPingPong(t4);
-    musicPlay(t5);
-    irRemoteVeiw(t6);
-    datetimeVeiw(t7);
-
+     // Varx: Why is the radio task init'd here? set this up outsiode UI init func for LoraBunny
     transmitTask =  lv_timer_create(radioTask, 200, NULL);
 
     lv_disp_trig_activity(NULL);
 
-    lv_obj_set_tile(tileview, t2, LV_ANIM_OFF);
+    lv_obj_set_tile(tileview, t1, LV_ANIM_OFF);
 }
 
 void radioTask(lv_timer_t *parent)
@@ -770,89 +713,6 @@ static void draw_part_event_cb(lv_event_t *e)
     }
 }
 
-void productPinmap(lv_obj_t *parent)
-{
-
-    struct  board_struct {
-        const char *func_name;
-        const uint8_t pin;
-    } __lilygo[] = {
-        {"TFT MOSI", BOARD_TFT_MOSI},
-        {"TFT SCK", BOARD_TFT_SCLK},
-        {"TFT CS", BOARD_TFT_CS},
-        {"TFT DC", BOARD_TFT_DC},
-        {"TFT BL", BOARD_TFT_BL},
-        {"TOUCH SDA", BOARD_TOUCH_SDA},
-        {"TOUCH SCL", BOARD_TOUCH_SCL},
-        {"TOUCH INT", BOARD_TOUCH_INT},
-        {"SENSOR SDA", BOARD_I2C_SDA},
-        {"SENSOR SCL", BOARD_I2C_SCL},
-        {"RTC INT", BOARD_RTC_INT_PIN},
-        {"PMU INT", BOARD_PMU_INT},
-        {"SENSOR INT", BOARD_BMA423_INT1},
-        {"IR Remote", BOARD_IR_PIN},
-        {"DAC BCK", BOARD_DAC_IIS_BCK},
-        {"DAC WS", BOARD_DAC_IIS_WS},
-        {"DAC DOUT", BOARD_DAC_IIS_DOUT},
-        {"RADIO SCK", BOARD_RADIO_SCK},
-        {"RADIO MISO", BOARD_RADIO_MISO},
-        {"RADIO MOSI", BOARD_RADIO_MOSI},
-        {"RADIO CS", BOARD_RADIO_SS},
-        {"RADIO DIO1", BOARD_RADIO_DI01},
-        {"RADIO RST", BOARD_RADIO_RST},
-        {"RADIO BUSY", BOARD_RADIO_BUSY},
-        {"MIC DOUT", BOARD_MIC_DATA},
-        {"MIC SCK", BOARD_MIC_CLOCK}
-    };
-
-    static lv_style_t cont_style;
-    lv_style_init(&cont_style);
-    lv_style_set_bg_opa(&cont_style, LV_OPA_100);
-    lv_style_set_bg_img_opa(&cont_style, LV_OPA_100);
-    lv_style_set_bg_color(&cont_style, lv_color_black());
-    // lv_style_set_line_opa(&cont_style, LV_OPA_TRANSP);
-    lv_style_set_border_width(&cont_style, 0);
-    lv_style_set_text_color(&cont_style, DEFAULT_COLOR);
-
-
-    lv_obj_t *table = lv_table_create(parent);
-    lv_obj_set_scrollbar_mode(table, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_scroll_dir(table, LV_DIR_VER);
-    lv_obj_add_style(table, &cont_style, LV_PART_SCROLLBAR);
-    lv_obj_add_style(table, &cont_style, LV_PART_ITEMS);
-    lv_obj_add_style(table, &cont_style, LV_PART_MAIN);
-
-    lv_table_set_cell_value(table, 0, 0, "Name");
-    lv_table_set_cell_value(table, 0, 1, "GPIO");
-    for (int i = 1; i < sizeof(__lilygo) / sizeof(__lilygo[0]); ++i) {
-        lv_table_set_cell_value_fmt(table, i, 0, "%s", __lilygo[i].func_name);
-        lv_table_set_cell_value_fmt(table, i, 1, "%d", __lilygo[i].pin);
-    }
-
-    lv_obj_add_event_cb(table, draw_part_event_cb, LV_EVENT_DRAW_PART_BEGIN, NULL);
-
-}
-
-void lilygo_qrcode(lv_obj_t *parent, const char *url, const char *str)
-{
-    lv_color_t bg_color = lv_palette_lighten(LV_PALETTE_YELLOW, 5);
-    lv_color_t fg_color = lv_palette_darken(LV_PALETTE_YELLOW, 4);
-    lv_coord_t size = 150;
-    lv_obj_t *qr = lv_qrcode_create(parent, size, fg_color, bg_color);
-
-    lv_qrcode_update(qr, url, strlen(url));
-    lv_obj_center(qr);
-    /*Add a border with bg_color*/
-    lv_obj_set_style_border_color(qr, bg_color, 0);
-    lv_obj_set_style_border_width(qr, 5, 0);
-
-    lv_obj_t *label = lv_label_create(parent);
-    lv_label_set_text(label, str );
-    lv_obj_set_style_text_color(label, DEFAULT_COLOR, LV_PART_MAIN);
-    lv_obj_set_style_text_font(label, &font_sandbox, LV_PART_MAIN);
-    lv_obj_align_to(label, qr, LV_ALIGN_OUT_BOTTOM_MID, 0, 10);
-}
-
 void analogclock(lv_obj_t *parent)
 {
     bool antialias = true;
@@ -936,175 +796,15 @@ void analogclock(lv_obj_t *parent)
         int percent = watch.getBatteryPercent();
         lv_label_set_text_fmt(battery_percent, "%d", percent == -1 ? 0 : percent);
 
-        // float  temp = watch.readBmaTemp();
+         float  temp = watch.readCoreTemp();
         // Serial.print(temp);
         // Serial.println("*C");
-        // lv_label_set_text_fmt(weather_celsius, "%d°C", (int)temp);
+        lv_label_set_text_fmt(weather_celsius, "%d°C", (int)temp);
 
     },
     1000, NULL);
 }
 
-
-lv_obj_t *watch_if_hh_img;
-lv_obj_t *watch_if_mm_img;
-lv_obj_t *watch_if_ss_img;
-
-void analogclock2(lv_obj_t *parent)
-{
-    bool antialias = true;
-    lv_img_header_t header;
-
-    const void *clock_filename = &watch_if;
-    const void *hour_filename = &watch_if_hour;
-    const void *min_filename = &watch_if_min;
-    const void *sec_filename = &watch_if_sec;
-
-
-    lv_obj_t *clock_bg =  lv_img_create(parent);
-    lv_img_set_src(clock_bg, &watch_bg);
-    lv_obj_set_size(clock_bg, 240, 240);
-    lv_obj_center(clock_bg);
-
-    lv_obj_t *clock_if =  lv_img_create(parent);
-    lv_img_set_src(clock_if, clock_filename);
-    lv_obj_set_size(clock_if, 240, 240);
-    lv_obj_center(clock_if);
-
-
-    watch_if_hh_img = lv_img_create(parent);
-    lv_img_decoder_get_info(hour_filename, &header);
-    lv_img_set_src(watch_if_hh_img, hour_filename);
-    lv_obj_center(watch_if_hh_img);
-    lv_img_set_pivot(watch_if_hh_img, header.w / 2, header.h / 2);
-    lv_img_set_antialias(watch_if_hh_img, antialias);
-
-    lv_img_decoder_get_info(min_filename, &header);
-    watch_if_mm_img = lv_img_create(parent);
-    lv_img_set_src(watch_if_mm_img,  min_filename);
-    lv_obj_center(watch_if_mm_img);
-    lv_img_set_pivot(watch_if_mm_img, header.w / 2, header.h / 2);
-    lv_img_set_antialias(watch_if_mm_img, antialias);
-
-    lv_img_decoder_get_info(sec_filename, &header);
-    watch_if_ss_img = lv_img_create(parent);
-    lv_img_set_src(watch_if_ss_img,  sec_filename);
-    lv_obj_center(watch_if_ss_img);
-    lv_img_set_pivot(watch_if_ss_img, header.w / 2, header.h / 2);
-    lv_img_set_antialias(watch_if_ss_img, antialias);
-
-    lv_timer_create([](lv_timer_t *timer) {
-
-        time_t now;
-        struct tm  timeinfo;
-        time(&now);
-        localtime_r(&now, &timeinfo);
-
-        lv_img_set_angle(watch_if_hh_img, ((timeinfo.tm_hour) * 300 + ((timeinfo.tm_min) * 5)) % 3600);
-        lv_img_set_angle(watch_if_mm_img, (timeinfo.tm_min) * 60);
-
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, watch_if_ss_img);
-        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_img_set_angle);
-        lv_anim_set_values(&a, (timeinfo.tm_sec * 60) % 3600,
-                           (timeinfo.tm_sec + 1) * 60);
-        lv_anim_set_time(&a, 1000);
-        lv_anim_start(&a);
-    },
-    1000, NULL);
-}
-
-lv_obj_t *watch_if_hh_img3;
-lv_obj_t *watch_if_mm_img3;
-lv_obj_t *watch_if_ss_img3;
-
-void analogclock3(lv_obj_t *parent)
-{
-    bool antialias = true;
-    lv_img_header_t header;
-
-    const void *clock_filename = &watch_if_bg2;
-    const void *hour_filename = &watch_if_hour2;
-    const void *min_filename = &watch_if_min2;
-    const void *sec_filename = &watch_if_sec2;
-
-
-    lv_obj_t *clock_if =  lv_img_create(parent);
-    lv_img_set_src(clock_if, clock_filename);
-    lv_obj_set_size(clock_if, 240, 240);
-    lv_obj_center(clock_if);
-
-
-    watch_if_hh_img3 = lv_img_create(parent);
-    lv_img_decoder_get_info(hour_filename, &header);
-    lv_img_set_src(watch_if_hh_img3, hour_filename);
-    lv_obj_center(watch_if_hh_img3);
-    lv_img_set_pivot(watch_if_hh_img3, header.w / 2, header.h / 2);
-    lv_img_set_antialias(watch_if_hh_img3, antialias);
-
-    lv_img_decoder_get_info(min_filename, &header);
-    watch_if_mm_img3 = lv_img_create(parent);
-    lv_img_set_src(watch_if_mm_img3,  min_filename);
-    lv_obj_center(watch_if_mm_img3);
-    lv_img_set_pivot(watch_if_mm_img3, header.w / 2, header.h / 2);
-    lv_img_set_antialias(watch_if_mm_img3, antialias);
-
-    lv_img_decoder_get_info(sec_filename, &header);
-    watch_if_ss_img3 = lv_img_create(parent);
-    lv_img_set_src(watch_if_ss_img3,  sec_filename);
-    lv_obj_center(watch_if_ss_img3);
-    lv_img_set_pivot(watch_if_ss_img3, header.w / 2, header.h / 2);
-    lv_img_set_antialias(watch_if_ss_img3, antialias);
-
-    lv_timer_create([](lv_timer_t *timer) {
-
-        time_t now;
-        struct tm  timeinfo;
-        time(&now);
-        localtime_r(&now, &timeinfo);
-
-        lv_img_set_angle(watch_if_hh_img3, ((timeinfo.tm_hour) * 300 + ((timeinfo.tm_min) * 5)) % 3600);
-        lv_img_set_angle(watch_if_mm_img3, (timeinfo.tm_min) * 60);
-
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, watch_if_ss_img3);
-        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_img_set_angle);
-        lv_anim_set_values(&a, (timeinfo.tm_sec * 60) % 3600,
-                           (timeinfo.tm_sec + 1) * 60);
-        lv_anim_set_time(&a, 1000);
-        lv_anim_start(&a);
-    },
-    1000, NULL);
-
-}
-
-void digitalClock(lv_obj_t *parent)
-{
-    const void *clock_filename = &watch_if_5;
-    lv_obj_t *clock_if =  lv_img_create(parent);
-    lv_img_set_src(clock_if, clock_filename);
-    lv_obj_set_size(clock_if, 240, 240);
-    lv_obj_center(clock_if);
-
-    label_datetime = lv_label_create(parent);
-    lv_label_set_text(label_datetime, "00:00");
-    lv_obj_set_style_text_font(label_datetime, &font_firacode_60, LV_PART_MAIN);
-    lv_obj_set_style_text_color(label_datetime, lv_color_white(), LV_PART_MAIN);
-    lv_obj_align(label_datetime, LV_ALIGN_CENTER, 0, 50);
-
-    lv_timer_create([](lv_timer_t *timer) {
-        time_t now;
-        struct tm  timeinfo;
-        time(&now);
-        localtime_r(&now, &timeinfo);
-        static  bool rever = false;
-        lv_label_set_text_fmt(label_datetime, rever ? "%02d:%02d" : "%02d %02d", timeinfo.tm_hour, timeinfo.tm_min);
-        rever = !rever;
-    },
-    1000, NULL);
-}
 
 static void slider_event_cb(lv_event_t *e)
 {
@@ -1127,106 +827,6 @@ static void light_sw_event_cb(lv_event_t *e)
     }
 }
 
-void devicesInformation(lv_obj_t *parent)
-{
-    lv_obj_t *label = lv_label_create(parent);
-    String text;
-    text = "Chip:";
-    text += ESP.getChipModel();
-    text += " / Rev:";
-    text += ESP.getChipRevision();
-    text += "\n";
-    text += "Flash Size:";
-    text += ESP.getFlashChipSize() / 1024 / 1024;
-    text += "MB Type:OPI\nSpeed:";
-    text += ESP.getFlashChipSpeed() / 1000 / 1000;
-    text += "MHz\n";
-    text += "Psram Size:";
-    text += (ESP.getPsramSize() / 1024);
-    text += "/";
-    text += (ESP.getFreePsram() / 1024);
-    text += "kb\n";
-    text += "IDF Version: ";
-    text += ESP.getSdkVersion();
-    text += "\n";
-    text += "Arduino Version: v";
-    text += String(ESP_ARDUINO_VERSION_MAJOR);
-    text += ".";
-    text += String(ESP_ARDUINO_VERSION_MINOR);
-    text += ".";
-    text += String(ESP_ARDUINO_VERSION_PATCH);
-    text += "\n";
-    text += "lvgl Version: v";
-    text += String(lv_version_major());
-    text += ".";
-    text += String(lv_version_minor());
-    text += ".";
-    text += String(lv_version_patch());
-    text += "\n";
-    text += "TFT_eSPI Version: v";
-    text += TFT_ESPI_VERSION;
-    text += "\n";
-
-    /*Create a transition*/
-    static const lv_style_prop_t props[] = {LV_STYLE_BG_COLOR, LV_STYLE_PROP_INV};
-    static lv_style_transition_dsc_t transition_dsc;
-    lv_style_transition_dsc_init(&transition_dsc, props, lv_anim_path_linear, 300, 0, NULL);
-
-    static lv_style_t style_indicator;
-    static lv_style_t style_knob;
-
-
-    lv_style_init(&style_indicator);
-    lv_style_set_bg_opa(&style_indicator, LV_OPA_COVER);
-    lv_style_set_bg_color(&style_indicator, DEFAULT_COLOR);
-    lv_style_set_radius(&style_indicator, LV_RADIUS_CIRCLE);
-    lv_style_set_transition(&style_indicator, &transition_dsc);
-
-    lv_style_init(&style_knob);
-    lv_style_set_bg_opa(&style_knob, LV_OPA_COVER);
-    lv_style_set_bg_color(&style_knob, DEFAULT_COLOR);
-    lv_style_set_border_color(&style_knob, lv_palette_darken(LV_PALETTE_YELLOW, 2));
-    lv_style_set_border_width(&style_knob, 2);
-    lv_style_set_radius(&style_knob, LV_RADIUS_CIRCLE);
-    lv_style_set_pad_all(&style_knob, 6); /*Makes the knob larger*/
-    lv_style_set_transition(&style_knob, &transition_dsc);
-
-
-    static lv_style_t label_style;
-    lv_style_init(&label_style);
-    lv_style_set_text_color(&label_style, lv_color_white());
-    lv_obj_add_style(label, &label_style, LV_PART_MAIN);
-    lv_label_set_text(label, text.c_str());
-    lv_obj_set_style_text_font(label, &font_jetBrainsMono, LV_PART_MAIN);
-    lv_obj_set_style_text_color(label, DEFAULT_COLOR, LV_PART_MAIN);
-    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 0, 0);
-
-
-    /*Create a slider and add the style*/
-    lv_obj_t *slider = lv_slider_create(parent);
-    lv_obj_set_size(slider, 200, 30);
-    lv_slider_set_range(slider, 5, 255);
-    lv_obj_add_style(slider, &style_indicator, LV_PART_INDICATOR);
-    lv_obj_add_style(slider, &style_knob, LV_PART_KNOB);
-    lv_obj_align_to(slider, label, LV_ALIGN_OUT_BOTTOM_MID, 0, 10);
-    lv_slider_set_value(slider, watch.getBrightness(), LV_ANIM_OFF);
-
-    /*Create a label below the slider*/
-    lv_obj_t *slider_label = lv_label_create(parent);
-    lv_label_set_text_fmt(slider_label, "%u%%", watch.getBrightness());
-    lv_obj_set_style_text_color(slider_label, lv_color_white(), LV_PART_MAIN);
-    lv_obj_add_event_cb(slider, slider_event_cb, LV_EVENT_VALUE_CHANGED, slider_label);
-    lv_obj_align_to(slider_label, slider, LV_ALIGN_CENTER, 0, 0);
-
-    // label = lv_label_create(parent);
-    // lv_label_set_text(label, "LightSleep:");
-    // lv_obj_align(label, LV_ALIGN_BOTTOM_LEFT, 20, -40);
-    // lv_obj_add_style(label, &label_style, LV_PART_MAIN);
-
-    // lv_obj_t *sw = lv_switch_create(parent);
-    // lv_obj_align(sw, LV_ALIGN_BOTTOM_RIGHT, -20, -40);
-    // lv_obj_add_event_cb(sw, light_sw_event_cb, LV_EVENT_VALUE_CHANGED, sw);
-}
 
 void wifiscan(lv_obj_t *parent)
 {
@@ -1249,7 +849,7 @@ void wifiscan(lv_obj_t *parent)
 
 
     lv_obj_t *label = lv_label_create(cont);
-    lv_label_set_text(label, "Scaning...");
+    lv_label_set_text(label, "Scanning...");
     lv_obj_set_style_text_color(label, lv_color_white(), LV_PART_MAIN);
     lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL);
     lv_obj_align_to(label, NULL, LV_ALIGN_TOP_MID, 0, 2);
@@ -1598,29 +1198,6 @@ void radioPingPong(lv_obj_t *parent)
 
 }
 
-void lv_player_event_cb(lv_event_t *e)
-{
-#ifdef ENABLE_PLAYER
-    Serial.println("Running mp3 player!");
-    out->SetGain(0.3);
-    file->open(AUDIO_DATA, sizeof(AUDIO_DATA));
-    mp3->begin(id3, out);
-    player_task_cb = playMP3;
-    vTaskResume(playerTaskHandler);
-#endif
-}
-
-void lv_play_record_event_cb(lv_event_t *e)
-{
-#ifdef ENABLE_PLAYER
-    Serial.println("Running wav player!");
-    out->SetGain(1);
-    file_fs->open(DEFAULT_RECORD_FILENAME);
-    wav->begin(file_fs, out);
-    player_task_cb = playWAV;
-    vTaskResume(playerTaskHandler);
-#endif
-}
 
 static void progressBarSubscriberCB(lv_event_t *e)
 {
@@ -1700,13 +1277,6 @@ void createProgressBar(lv_obj_t *parent)
     lv_msg_subsribe_obj(LVGL_MESSAGE_PROGRESS_CHANGED_ID, arc, NULL);
 }
 
-void lv_record_event_cb(lv_event_t *e)
-{
-    Serial.println("Started Recording...");
-    recordFlag = true;
-    createProgressBar(lv_scr_act());
-    lv_disp_trig_activity(NULL);
-}
 
 void createButton(lv_obj_t *parent, const char *txt, lv_event_cb_t event_cb)
 {
@@ -1747,28 +1317,6 @@ void createButton(lv_obj_t *parent, const char *txt, lv_event_cb_t event_cb)
     lv_obj_add_event_cb(btn1, event_cb, LV_EVENT_CLICKED, NULL);
 }
 
-void musicPlay(lv_obj_t *parent)
-{
-    static lv_style_t cont_style;
-    lv_style_init(&cont_style);
-    lv_style_set_bg_opa(&cont_style, LV_OPA_TRANSP);
-    lv_style_set_bg_img_opa(&cont_style, LV_OPA_TRANSP);
-    lv_style_set_line_opa(&cont_style, LV_OPA_TRANSP);
-    lv_style_set_border_width(&cont_style, 0);
-    lv_style_set_text_color(&cont_style, DEFAULT_COLOR);
-    // lv_style_set_text_color(&cont_style, lv_color_white());
-
-    lv_obj_t *cont = lv_obj_create(parent);
-    lv_obj_set_size(cont, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scroll_dir(cont, LV_DIR_VER);
-    lv_obj_add_style(cont, &cont_style, LV_PART_MAIN);
-
-    createButton(cont, "Play", lv_player_event_cb);
-    createButton(cont, "Record", lv_record_event_cb);
-    createButton(cont, "Play record", lv_play_record_event_cb);
-}
 
 void lv_ir_sender_cb(lv_event_t *e)
 {
@@ -2243,48 +1791,6 @@ void settingRadio()
 
 }
 
-void playerTask(void *params)
-{
-#ifdef ENABLE_PLAYER
-    while (1) {
-        if (player_task_cb) {
-            if (!player_task_cb()) {
-                vTaskSuspend(NULL);
-            }
-        } else {
-            vTaskSuspend(NULL);
-        }
-        delay(5);
-    }
-#endif
-}
-
-static bool playMP3()
-{
-#ifdef ENABLE_PLAYER
-    if (mp3->isRunning()) {
-        if (!mp3->loop()) {
-            mp3->stop();
-            return false;
-        }
-    }
-    return true;
-#endif
-}
-
-static bool playWAV()
-{
-#ifdef ENABLE_PLAYER
-    if (wav->isRunning()) {
-        if (!wav->loop()) {
-            wav->stop();
-            return false;
-        }
-    }
-    return true;
-#endif
-}
-
 
 void vadTask(void *params)
 {
@@ -2314,212 +1820,9 @@ void vadTask(void *params)
 #endif
 }
 
-void settingPlayer()
-{
-#ifdef ENABLE_PLAYER
-    file = new AudioFileSourcePROGMEM(AUDIO_DATA, sizeof(AUDIO_DATA));
-    id3 = new AudioFileSourceID3(file);
-    out = new AudioOutputI2S(1, AudioOutputI2S::EXTERNAL_I2S);
-    out->SetPinout(BOARD_DAC_IIS_BCK, BOARD_DAC_IIS_WS, BOARD_DAC_IIS_DOUT);
-    out->SetGain(0.2);
-    mp3 = new AudioGeneratorMP3();
-    mp3->begin(id3, out);
-
-    file_fs = new AudioFileSourceSPIFFS();
-    wav = new AudioGeneratorWAV();
-    player_task_cb = playMP3;
-
-    xTaskCreate(playerTask, "player", 8 * 1024, NULL, 12, &playerTaskHandler);
-#endif
-
-    // Initialize esp-sr vad detected
-#if ESP_IDF_VERSION_VAL(4,4,1) == ESP_IDF_VERSION
-    vad_inst = vad_create(VAD_MODE_0, MIC_I2S_SAMPLE_RATE, VAD_FRAME_LENGTH_MS);
-#elif  ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4,4,1)
-    vad_inst = vad_create(VAD_MODE_0);
-#else
-#error "No support this version."
-#endif
-    vad_buff = (int16_t *)ps_malloc(vad_buffer_size);
-    if (vad_buff == NULL) {
-        while (1) {
-            Serial.println("Memory allocation failed!");
-            delay(1000);
-        }
-    }
-    xTaskCreate(vadTask, "vad", 8 * 1024, NULL, 12, &vadTaskHandler);
-
-
-}
-
 void settingIRRemote()
 {
 #ifdef ENABLE_IR_SENDER
     irsend.begin();
 #endif
 }
-
-// Create a file and add wav header to it so we can play it from PC later
-static bool CreateWAV(const char *song_name, uint32_t duration, uint16_t num_channels, const uint32_t sampling_rate, uint16_t bits_per_sample)
-{
-    // data size in bytes - > this amount of data should be recorded from microphone later
-    uint32_t data_size = sampling_rate * num_channels * bits_per_sample * duration / 8;
-
-    File new_audio_file = SPIFFS.open(song_name, FILE_WRITE);
-    if (!new_audio_file) {
-        Serial.println("Failed to create file");
-        return false;
-    }
-
-    /* *************** ADD ".WAV" HEADER *************** */
-    uint8_t CHUNK_ID[4] = {'R', 'I', 'F', 'F'};
-    new_audio_file.write(CHUNK_ID, 4);
-
-    uint32_t chunk_size = data_size + 36;
-    uint8_t CHUNK_SIZE[4] = {
-        (uint8_t)(chunk_size),
-        (uint8_t)(chunk_size >> 8),
-        (uint8_t)(chunk_size >> 16),
-        (uint8_t)(chunk_size >> 24)
-    };
-    new_audio_file.write(CHUNK_SIZE, 4);
-
-    uint8_t FORMAT[4] = {'W', 'A', 'V', 'E'};
-    new_audio_file.write(FORMAT, 4);
-
-    uint8_t SUBCHUNK_1_ID[4] = {'f', 'm', 't', ' '};
-    new_audio_file.write(SUBCHUNK_1_ID, 4);
-
-    uint8_t SUBCHUNK_1_SIZE[4] = {0x10, 0x00, 0x00, 0x00};
-    new_audio_file.write(SUBCHUNK_1_SIZE, 4);
-
-    uint8_t AUDIO_FORMAT[2] = {0x01, 0x00};
-    new_audio_file.write(AUDIO_FORMAT, 2);
-
-    uint8_t NUM_CHANNELS[2] = {
-        (uint8_t)num_channels,
-        (uint8_t)(num_channels >> 8)
-    };
-    new_audio_file.write(NUM_CHANNELS, 2);
-
-    uint8_t SAMPLING_RATE[4] = {
-        (uint8_t)(sampling_rate),
-        (uint8_t)(sampling_rate >> 8),
-        (uint8_t)(sampling_rate >> 16),
-        (uint8_t)(sampling_rate >> 24)
-    };
-    new_audio_file.write(SAMPLING_RATE, 4);
-
-    uint32_t byte_rate = num_channels * sampling_rate * bits_per_sample / 8;
-    uint8_t BYTE_RATE[4] = {
-        (uint8_t)byte_rate,
-        (uint8_t)(byte_rate >> 8),
-        (uint8_t)(byte_rate >> 16),
-        (uint8_t)(byte_rate >> 24)
-    };
-    new_audio_file.write(BYTE_RATE, 4);
-
-    uint16_t block_align = num_channels * bits_per_sample / 8;
-    uint8_t BLOCK_ALIGN[2] = {
-        (uint8_t)block_align,
-        (uint8_t)(block_align >> 8)
-    };
-    new_audio_file.write(BLOCK_ALIGN, 2);
-
-    uint8_t BITS_PER_SAMPLE[2] = {
-        (uint8_t)bits_per_sample,
-        (uint8_t)(bits_per_sample >> 8)
-    };
-    new_audio_file.write(BITS_PER_SAMPLE, 2);
-
-    uint8_t SUBCHUNK_2_ID[4] = {'d', 'a', 't', 'a'};
-    new_audio_file.write(SUBCHUNK_2_ID, 4);
-
-    uint8_t SUBCHUNK_2_SIZE[4] = {
-        (uint8_t)(data_size),
-        (uint8_t)(data_size >> 8),
-        (uint8_t)(data_size >> 16),
-        (uint8_t)(data_size >> 24)
-    };
-    new_audio_file.write(SUBCHUNK_2_SIZE, 4);
-
-    // Actual data should be appended after this point later
-
-    new_audio_file.close();
-    return true;
-}
-
-static void PDM_Record(const char *song_name, uint32_t duration)
-{
-    // Add wav header to the file so we can play it from PC later
-    if (!CreateWAV(song_name, duration, 1, MIC_I2S_SAMPLE_RATE, MIC_I2S_BITS_PER_SAMPLE)) {
-        Serial.println("Error during wav header creation");
-        return;
-    }
-
-    Serial.println("Create wav file succssed!");
-
-    // Buffer to receive data from microphone
-    const size_t BUFFER_SIZE = 500;
-    uint8_t *buf = (uint8_t *)malloc(BUFFER_SIZE);
-    if (!buf) {
-        Serial.println("Failed to alloc memory");
-        return;
-    }
-
-    // Open created .wav file in append+binary mode to add PCM data
-    File audio_file = SPIFFS.open(song_name, FILE_APPEND);
-    if (!audio_file) {
-        Serial.println("Failed to create file");
-        return;
-    }
-
-    // data size in bytes - > this amount of data should be recorded from microphone
-    uint32_t data_size = MIC_I2S_SAMPLE_RATE * MIC_I2S_BITS_PER_SAMPLE * duration / 8;
-
-    // Record until "file_size" bytes have been read from mic.
-    uint32_t counter = 0;
-    size_t bytes_written;
-    Serial.println("Recording started");
-    int percentage = 0;
-
-    while (counter != data_size) {
-
-        percentage = ((float)counter / (float)data_size) * 100;
-        Serial.print(percentage);
-        Serial.println("%");
-
-        lv_msg_send(LVGL_MESSAGE_PROGRESS_CHANGED_ID, &percentage);
-
-        // Check for file size overflow
-        if (counter > data_size) {
-            Serial.println("File is corrupted. data_size must be multiple of BUFFER_SIZE. Please modify BUFFER_SIZE");
-            break;
-        }
-
-        // Read data from microphone
-        if (!watch.readMicrophone(buf, BUFFER_SIZE, &bytes_written)) {
-            Serial.println("readMicrophone() error");
-        }
-
-
-        if (bytes_written != BUFFER_SIZE) {
-            Serial.println("Bytes written error");
-        }
-
-        // Save data to SPIFFS
-        audio_file.write( buf, BUFFER_SIZE);
-
-        // Increment the counter
-        counter += BUFFER_SIZE;
-
-        lv_task_handler();
-    }
-    percentage = 100;
-    lv_msg_send(LVGL_MESSAGE_PROGRESS_CHANGED_ID, &percentage);
-    Serial.println("Recording finished");
-
-    audio_file.close();
-    free(buf);
-}
-

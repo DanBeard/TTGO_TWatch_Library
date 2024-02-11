@@ -121,7 +121,7 @@ bool LilyGoLib::begin(Stream *stream)
     }
 
     fillScreen(TFT_BLACK);
-    drawString("Hello T-Watch", 120, 120);
+    drawString("Hello Varx!", 120, 120);
 
     setBrightness(50);
 
@@ -158,7 +158,8 @@ bool LilyGoLib::begin(Stream *stream)
     res = SensorDRV2605::init(Wire);
     if (!res) {
         log_println("Failed to find DRV2605 - check your wiring!");
-    } else {
+    }
+     else {
         log_println("Initializing DRV2605 succeeded");
         SensorDRV2605::selectLibrary(1);
         SensorDRV2605::setMode(DRV2605_MODE_INTTRIG);
@@ -184,7 +185,7 @@ bool LilyGoLib::begin(Stream *stream)
 
     beginCore();
 
-    delay(1000);
+    delay(25);
 
     return true;
 }
